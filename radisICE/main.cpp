@@ -45,7 +45,7 @@
 #pragma comment(lib, "zydis.lib")
 
 void* MapInMemory(const char* lpFileName);
-int zmain(const uint8_t* base, size_t image_size, const uint8_t* pc, const uint8_t* image_base);
+int zmain(int nested, const uint8_t* base, size_t image_size, const uint8_t* pc, const uint8_t* image_base);
 
 int main(int argc, char* argv[])
 {
@@ -63,7 +63,7 @@ int main(int argc, char* argv[])
     uint8_t* pc = (uint8_t*)DosHeader;
     pc += pNtHeader->OptionalHeader.AddressOfEntryPoint;
 
-    zmain((const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, pc, (const uint8_t *)pNtHeader->OptionalHeader.ImageBase);
+    zmain(0, (const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, pc, (const uint8_t *)pNtHeader->OptionalHeader.ImageBase);
 
     return 0;
 }
