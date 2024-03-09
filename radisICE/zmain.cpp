@@ -16,11 +16,15 @@ typedef std::list<flow_node> function_list;
 typedef struct _flow_function
 {
     std::list<flow_node> instructions;
+    std::map<ZyanU64, ZyanU64> relative_offsets;
     std::list<ZyanU64> x_ref;
 } flow_function;
 
-bool conditional_jmp(ZydisMnemonic mnemonic)
+
+static bool is_conditional_jmp(const ZydisDecodedInstruction& instr)
 {
+    ZydisMnemonic mnemonic = instr.mnemonic;
+
     switch (mnemonic)
     {
     case ZYDIS_MNEMONIC_JCXZ:
@@ -29,7 +33,6 @@ bool conditional_jmp(ZydisMnemonic mnemonic)
     case ZYDIS_MNEMONIC_JKZD:
     case ZYDIS_MNEMONIC_JL:
     case ZYDIS_MNEMONIC_JLE:
-    case ZYDIS_MNEMONIC_JMP:
     case ZYDIS_MNEMONIC_JNB:
     case ZYDIS_MNEMONIC_JNBE:
     case ZYDIS_MNEMONIC_JNL:
@@ -51,6 +54,60 @@ bool conditional_jmp(ZydisMnemonic mnemonic)
     return false;
 }
 
+static bool is_jmp(const ZydisDecodedInstruction& instr)
+{
+    if (instr.mnemonic == ZYDIS_MNEMONIC_JMP)
+        return true;
+
+    return false;
+}
+
+static bool break_flow(const ZydisDecodedInstruction& instr)
+{
+    if (instr.mnemonic == ZYDIS_MNEMONIC_RET)
+        return true;
+    if (instr.mnemonic == ZYDIS_MNEMONIC_INT3)
+        return true;
+    if (instr.mnemonic == ZYDIS_MNEMONIC_JMP && instr.length == 6)
+        return true;
+        
+    if (instr.mnemonic == ZYDIS_MNEMONIC_INT)   // cannot be.. but it's a legacy int 29?
+        return true;
+
+    return false;
+}
+
+static ZyanU64 find_real_pc(ZyanU64 pc, const uint8_t* ImageBuffer, const size_t ImageSize)
+{
+    static std::map<ZyanU64, ZyanU64> translated;
+
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+
+    if (translated.find(pc) != translated.end())
+    {
+        return translated.at(pc);
+    }
+
+    bool first = true;
+    while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, ImageBuffer + pc, ImageSize - pc, &instruction, operands)))
+    {
+        if (is_jmp(instruction) && instruction.length == 5 && first == true)
+        {
+            first = false;
+            ZyanU64 dst = pc + instruction.raw.imm->value.s + instruction.length;
+            translated.insert({ pc, dst });
+            pc = dst;
+        }
+        else
+            break;
+    }
+
+    return pc;
+}
+
 bool xref_already_present(std::list<ZyanU64>& x_ref, ZyanU64 offset)
 {
     for (ZyanU64 xref : x_ref)
@@ -61,7 +118,7 @@ bool xref_already_present(std::list<ZyanU64>& x_ref, ZyanU64 offset)
     return false;
 }
 
-std::list< ZyanU64> routine_covered;
+std::map<ZyanU64, bool> visited_pc;
 
 flow_function fetch_routine(const uint8_t* ImageBuffer, const size_t ImageSize, ZyanU64 offset, ZyanU64 ImageBase)
 {
@@ -72,37 +129,53 @@ flow_function fetch_routine(const uint8_t* ImageBuffer, const size_t ImageSize, 
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
 
     std::map<ZyanU64, bool> rel_jmp;
-    std::map<ZyanU64, bool> visited_pc;
     bool ignoreJmp = true;
 
     flow_function flow;
     runtime_address = 0;
 
 _disassemble:
-    while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, ImageBuffer + offset, ImageSize - offset, &instruction, operands)))
+    while (true)
     {
-        if (instruction.opcode == 0xE9 /* && ignoreJmp*/)
-        {   // follow the jump
-            ignoreJmp = false;
-            ZyanU64 dst = offset + instruction.raw.imm->value.s + instruction.length;
+        if (offset > (ZyanU64)(ImageBuffer + ImageSize))
+            break;
 
-            if (rel_jmp.find(dst) == rel_jmp.end())
-            {
-                rel_jmp.insert({ dst, true });
-                offset = dst;
-                continue;
-            }
-            else
-            {
-                //printf("Node visited\n");
-                break;
-            }
+        ZyanU64 pc = find_real_pc(offset, ImageBuffer, ImageSize);
+        offset = pc;
+        ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, ImageBuffer + offset, ImageSize - offset, &instruction, operands));
+        //if (pc != offset)
+        //{
+        //    if (visited_pc.find(pc) == visited_pc.end())
+        //    {
+        //        // not visited.. we have to explore!
+        //    }
+        //    else
+        //    {
+        //        break;
+        //    }
+        //    if (rel_jmp.find(offset) == rel_jmp.end())
+        //    {
+        //        rel_jmp.insert({ offset, true });   // the source was already exlored.. it will bring us in a loop
+        //        offset = pc;
+        //        continue;
+        //    }
+        //    else
+        //    {
+        //        rel_jmp.insert({ pc, false });
+        //        break;
+        //    }
+        //}
+
+        if (visited_pc.find(pc) != visited_pc.end())
+        {
+            break;
         }
+
+        visited_pc.insert({ pc, true });
 
         flow_node node;
         memcpy(&node.decoded, &instruction, sizeof(instruction));
         memcpy(&node.operands, &operands, sizeof(operands));
-
         node.offset = offset;
 
         flow.instructions.push_back(node);
@@ -117,7 +190,7 @@ _disassemble:
 
         offset += instruction.length;
 
-        if (conditional_jmp(instruction.mnemonic))
+        if (is_conditional_jmp(instruction))
         {
             // follow the jump
             ZyanU64 dst = offset + instruction.raw.imm->value.s;// +instruction.length;
@@ -137,18 +210,16 @@ _disassemble:
             offset = dst;
             continue;
         }
-        if (instruction.opcode == 0xc3)
+
+        if (break_flow(instruction))
             break;
-        if (instruction.opcode == 0xcc)
-            break;
-        if (instruction.mnemonic == ZYDIS_MNEMONIC_JMP && instruction.length == 6)
-            break;
-        if (instruction.mnemonic == ZYDIS_MNEMONIC_INT)
-        {   // int instruction => 29h??? similar to intcc
-            break;
-        }
+
         ignoreJmp = true;
         runtime_address += instruction.length;
+        if (is_jmp(instruction))
+        {
+            offset = offset + instruction.raw.imm->value.s;
+        }
     }
 
     while (rel_jmp.begin() != rel_jmp.end())
@@ -175,13 +246,13 @@ int zmain(int nested, const uint8_t* ImageBuffer, size_t ImageSize, const uint8_
 {
     ZyanUSize offset = (ZyanUSize)(pc - ImageBuffer);
 
-    for (ZyanU64 addr : routine_covered)
-    {
-        if (addr == offset)
-            return 0;
-    }
+    //for (ZyanU64 addr : routine_covered)
+    //{
+    //    if (addr == offset)
+    //        return 0;
+    //}
 
-    routine_covered.push_back(offset);
+    //routine_covered.push_back(offset);
 
     const uint8_t* max = (ImageBuffer + ImageSize);
 
@@ -206,17 +277,27 @@ int zmain(int nested, const uint8_t* ImageBuffer, size_t ImageSize, const uint8_
         block_nested[i + 1] = 0;
     }
 
+    ZyanU64 rel_off = 0;
+
     for (flow_node &node : function.instructions)
     {
         printf(block_nested);
-        printf(" %016" PRIX64 "  ", node.offset + (ZyanU64)image_base);
+        printf(" %016" PRIX64 "  ", rel_off);
         char buffer[256];
+
+        if (is_jmp(node.decoded))
+        {
+        
+        }
+
+
         ZydisFormatterFormatInstruction(&formatter, &node.decoded, node.operands,
             node.decoded.operand_count_visible, buffer, sizeof(buffer),
             offset + (ZyanU64)image_base,
             ZYAN_NULL);
         puts(buffer);
         coverage++;
+        rel_off += node.decoded.length;
     }
     
     int count = 0;
