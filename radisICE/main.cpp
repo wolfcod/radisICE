@@ -63,7 +63,8 @@ int main(int argc, char* argv[])
     uint8_t* pc = (uint8_t*)DosHeader;
     pc += pNtHeader->OptionalHeader.AddressOfEntryPoint;
 
-    zmain(0, (const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, pc, (const uint8_t *)pNtHeader->OptionalHeader.ImageBase);
+    int coverage = zmain(0, (const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, pc, (const uint8_t *)pNtHeader->OptionalHeader.ImageBase);
 
+    printf("Number of instruction fetched: %d\n", coverage);
     return 0;
 }
