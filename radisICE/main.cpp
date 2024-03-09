@@ -45,7 +45,7 @@
 #pragma comment(lib, "zydis.lib")
 
 void* MapInMemory(const char* lpFileName);
-int zmain(int nested, const uint8_t* base, size_t image_size, const uint8_t* pc, const uint8_t* image_base);
+int zmain(size_t nested, const uint8_t* ImageBuffer, size_t ImageSize, ZyanU64 pc, ZyanU64 image_base);
 
 int main(int argc, char* argv[])
 {
@@ -61,9 +61,9 @@ int main(int argc, char* argv[])
     PIMAGE_NT_HEADERS pNtHeader = (PIMAGE_NT_HEADERS) ((ULONG_PTR)DosHeader + DosHeader->e_lfanew);
     
     uint8_t* pc = (uint8_t*)DosHeader;
-    pc += pNtHeader->OptionalHeader.AddressOfEntryPoint;
+    ZyanU64 AddressOfEntryPoint = pNtHeader->OptionalHeader.AddressOfEntryPoint;
 
-    int coverage = zmain(0, (const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, pc, (const uint8_t *)pNtHeader->OptionalHeader.ImageBase);
+    int coverage = zmain(0, (const uint8_t*)DosHeader, pNtHeader->OptionalHeader.SizeOfImage, AddressOfEntryPoint, (ZyanU64)pNtHeader->OptionalHeader.ImageBase);
 
     printf("Number of instruction fetched: %d\n", coverage);
     return 0;

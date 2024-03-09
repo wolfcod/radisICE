@@ -165,7 +165,7 @@ _disassemble:
         visited_pc.insert({ pc, true });
         ZyanU64 next_pc = offset + instruction.length;
 
-        if (is_jmp(instruction))
+        if (is_jmp(instruction) && instruction.length != 6) // take in consideration only instruction
         {
             offset = next_pc + instruction.raw.imm->value.s;
 
@@ -241,22 +241,17 @@ _disassemble:
     return flow;
 }
 
-int zmain(int nested, const uint8_t* ImageBuffer, size_t ImageSize, const uint8_t* pc, const uint8_t* image_base)
+static void print_header(int count, ZyanU64 off)
 {
-    ZyanUSize offset = (ZyanUSize)(pc - ImageBuffer);
+    printf("[%d] ----------------------- %016" PRIX64 "------------------ - \n", count, off);
+}
 
-    //for (ZyanU64 addr : routine_covered)
-    //{
-    //    if (addr == offset)
-    //        return 0;
-    //}
-
-    //routine_covered.push_back(offset);
-
+int zmain(size_t nested, const uint8_t* ImageBuffer, size_t ImageSize, ZyanU64 pc, ZyanU64 image_base)
+{
     const uint8_t* max = (ImageBuffer + ImageSize);
 
    
-    flow_function function = fetch_routine(ImageBuffer, ImageSize, offset, (ZyanU64)image_base);
+    flow_function function = fetch_routine(ImageBuffer, ImageSize, pc, image_base);
 
     // Initialize formatter. Only required when you actually plan to do instruction
     // formatting ("disassembling"), like we do here
@@ -268,17 +263,22 @@ int zmain(int nested, const uint8_t* ImageBuffer, size_t ImageSize, const uint8_
     // visualize relative addressing
     int coverage = 0;
 
-    char* block_nested = (char*)malloc(nested + 1);
-    block_nested[nested + 1] = 0;
-    for (int i = 0; i < nested; i++)
+    char* block_nested = (char*)malloc(nested + 2);
+    if (block_nested != NULL)
     {
-        block_nested[i] = '>';
-        block_nested[i + 1] = 0;
+        block_nested[nested + 1] = 0;
+        for (int i = 0; i < nested; i++)
+        {
+            block_nested[i] = '>';
+            block_nested[i + 1] = 0;
+        }
     }
-
     for (flow_node &node : function.instructions)
     {
-        printf(block_nested);
+        if (block_nested != NULL)
+        {
+            printf(block_nested);
+        }
         printf(" %016" PRIX64 "  %016" PRIX64 "  ", node.in_function, node.original);
         char buffer[256];
 
@@ -291,22 +291,18 @@ int zmain(int nested, const uint8_t* ImageBuffer, size_t ImageSize, const uint8_
 
         coverage++;
     }
-    
+    free(block_nested);
     int count = 0;
 
     while (function.x_ref.begin() != function.x_ref.end())
     {
         auto first = *(function.x_ref.begin());
         function.x_ref.pop_front();
-        printf("[%d] ----------------------- %08x -------------------\n", count++, first);
+        print_header(count++, first+image_base);
 
-        if (nested == 1)
-        {
+        coverage += zmain(nested + 1, ImageBuffer, ImageSize, first, image_base);
 
-        }
-        coverage += zmain(nested + 1, ImageBuffer, ImageSize, (const uint8_t*)(ImageBuffer + first), image_base);
-
-        printf("----------------------- %08x -------------------\n", first);
+        print_header(count, first);
 
     }
 
